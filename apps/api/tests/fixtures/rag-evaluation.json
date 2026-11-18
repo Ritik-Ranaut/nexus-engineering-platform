@@ -1,0 +1,23 @@
+{
+  "repository": "tiny-engineering-example",
+  "cases": [
+    {
+      "question": "How are access tokens validated?",
+      "relevantFiles": ["src/auth.ts"],
+      "expectedFacts": ["verifyToken checks the JWT signature", "rejects expired tokens"],
+      "answerable": true
+    },
+    {
+      "question": "Where are orders persisted?",
+      "relevantFiles": ["src/orders.ts"],
+      "expectedFacts": ["OrderRepository stores order records"],
+      "answerable": true
+    },
+    {
+      "question": "What payment provider is configured?",
+      "relevantFiles": [],
+      "expectedFacts": [],
+      "answerable": false
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+process.env.NODE_ENV = "test";
+process.env.PORT = "4000";
+process.env.MONGODB_URI = "mongodb://127.0.0.1:27017/nexus-test";
+process.env.JWT_SECRET = "test-secret-for-nexus-auth-at-least-32-characters";
+process.env.JWT_EXPIRES_IN_SECONDS = "900";
+process.env.WEB_ORIGIN = "http://localhost:5173";
+process.env.OLLAMA_BASE_URL = "http://127.0.0.1:11434";
+process.env.OLLAMA_CHAT_MODEL = "test-chat-model";
+process.env.OLLAMA_EMBEDDING_MODEL = "test-embedding-model";
+process.env.AI_VECTOR_DIMENSIONS = "3";

@@ -22,10 +22,11 @@ const projectSchema = new Schema(
     },
     indexingStatus: {
       type: String,
-      enum: ["empty", "indexing", "ready", "failed"],
+      enum: ["empty", "pending", "validating", "discovering", "cloning", "indexing", "analyzing", "ready", "failed", "cancelled"],
       default: "empty",
       required: true
     },
+    indexingError: { type: String, maxlength: 500 },
     generationCounter: { type: Number, default: 0, required: true },
     activeGeneration: { type: Number, default: 0, required: true }
   },

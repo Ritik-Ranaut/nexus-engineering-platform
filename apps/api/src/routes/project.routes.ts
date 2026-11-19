@@ -11,6 +11,7 @@ import {
   create,
   deleteVectors,
   get,
+  importRepository,
   index,
   list,
   updateIndex
@@ -119,6 +120,7 @@ router.use(requireAuth);
 router.post("/", create);
 router.get("/", list);
 router.get("/:projectId", get);
+router.post("/:projectId/import", indexingRateLimit, importRepository);
 router.post("/:projectId/index", indexingRateLimit, index);
 router.patch("/:projectId/index", indexingRateLimit, updateIndex);
 router.delete("/:projectId/vectors", deleteVectors);

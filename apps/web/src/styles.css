@@ -53,6 +53,7 @@ a { color: inherit; text-decoration: none; }
 .primary-button > span:last-child { font-size: 17px; }
 .button-spinner { width: 14px; height: 14px; border: 2px solid #353d29; border-top-color: transparent; border-radius: 50%; animation: spin .7s linear infinite; }
 .form-alert { padding: 11px 12px; border: 1px solid #704447; border-radius: 5px; background: #2a1c20; color: #f0a3a7; font-size: 12px; line-height: 1.55; }
+.form-success { padding: 11px 12px; border: 1px solid #38432d; border-radius: 5px; background: #1c211a; color: #b7cf8e; font-size: 12px; line-height: 1.55; }
 .switch-auth { margin: 25px 0 0; color: #8d939d; text-align: center; font-size: 12px; }
 .switch-auth a { color: var(--accent); font-weight: 600; }
 .security-note { display: flex; align-items: center; justify-content: center; gap: 7px; margin: 32px 0 0; color: #747b85; font-size: 10px; }
@@ -151,6 +152,7 @@ a { color: inherit; text-decoration: none; }
 .project-copy { min-width: 0; }
 .project-copy h3 { overflow: hidden; margin: 0 0 5px; color: #d7d9de; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
 .project-copy > span { display: block; overflow: hidden; color: #757c87; font: 10px "Consolas", monospace; text-overflow: ellipsis; white-space: nowrap; }
+.project-index-error { display: block; margin-top: 6px; color: #d58e91; font-size: 10px; line-height: 1.45; }
 .project-status { display: inline-flex; align-items: center; gap: 7px; color: #838a94; font-size: 10px; white-space: nowrap; }
 .project-status i { width: 5px; height: 5px; border-radius: 50%; background: #747a84; }
 .project-status.status-ready { color: #b4cf88; }
@@ -158,6 +160,8 @@ a { color: inherit; text-decoration: none; }
 .project-status.status-failed { color: #d58e91; }
 .project-status.status-failed i { background: #cf7379; }
 .project-open, .project-open-disabled { min-width: 105px; padding: 8px 10px; border: 1px solid #3a4232; border-radius: 5px; color: #c4e58b; font-size: 10px; text-align: center; white-space: nowrap; }
+.project-import-retry { background: transparent; cursor: pointer; }
+.project-import-retry:disabled { cursor: wait; opacity: .7; }
 .project-open:hover { border-color: #768c50; background: #b9d08a0c; }
 .project-open span { margin-left: 8px; }
 .project-open-disabled { border-color: #2b3037; color: #646b75; }

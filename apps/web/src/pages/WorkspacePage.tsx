@@ -1,13 +1,20 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
+import { io } from "socket.io-client";
 import { aiApi, ApiError, projectApi, type Project } from "../api/client";
 import { useAuthStore } from "../state/auth.store";
 
 const statusLabel: Record<Project["indexingStatus"], string> = {
   empty: "Awaiting source",
-  indexing: "Indexing",
+  pending: "Pending",
+  validating: "Validating repository",
+  cloning: "Cloning repository",
+  discovering: "Discovering project",
+  indexing: "Indexing source",
+  analyzing: "Analyzing architecture",
   ready: "Ready to chat",
-  failed: "Index failed"
+  failed: "Index failed",
+  cancelled: "Import cancelled"
 };
 
 export function WorkspacePage() {
@@ -18,7 +25,9 @@ export function WorkspacePage() {
   const [repositoryUrl, setRepositoryUrl] = useState("");
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const [retryingProjectId, setRetryingProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [aiStatus, setAiStatus] = useState("Checking local model…");
   const fileInput = useRef<HTMLInputElement>(null);
   const directoryInput = useRef<HTMLInputElement>(null);
@@ -36,6 +45,50 @@ export function WorkspacePage() {
   }, []);
 
   useEffect(() => { void loadProjects(); }, [loadProjects]);
+  const hasIndexingProjects = projects.some((project) =>
+    ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"].includes(project.indexingStatus)
+  );
+  useEffect(() => {
+    if (!hasIndexingProjects) return;
+    const intervalId = window.setInterval(() => {
+      projectApi.list().then(setProjects).catch((loadError: unknown) => {
+        setError(loadError instanceof Error ? loadError.message : "Could not refresh project status");
+      });
+    }, 3000);
+    return () => window.clearInterval(intervalId);
+  }, [hasIndexingProjects]);
+  useEffect(() => {
+    const importingProjects = projects.filter((project) =>
+      ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"].includes(project.indexingStatus)
+    );
+    if (importingProjects.length === 0) return;
+    const socket = io({ withCredentials: true, reconnection: true });
+    const subscribe = () => {
+      for (const project of importingProjects) {
+        socket.emit("project:subscribe", project.id);
+      }
+    };
+    socket.on("connect", subscribe);
+    socket.on("project:import-progress", (event: {
+      projectId: string;
+      status: Project["indexingStatus"];
+      error?: string;
+    }) => {
+      setProjects((current) => current.map((project) => project.id === event.projectId
+        ? { ...project, indexingStatus: event.status, indexingError: event.error }
+        : project
+      ));
+    });
+    return () => { void socket.close(); };
+  }, [hasIndexingProjects]);
+  useEffect(() => {
+    if (projectName.trim()) return;
+    const repositoryName = repositoryUrl.trim()
+      .match(/^https:\/\/github\.com\/[^/]+\/([^/?#]+)/i)?.[1]
+      ?.replace(/\.git$/i, "")
+      .replace(/[-_]+/g, " ");
+    if (repositoryName) setProjectName(repositoryName);
+  }, [projectName, repositoryUrl]);
   useEffect(() => {
     directoryInput.current?.setAttribute("webkitdirectory", "");
     directoryInput.current?.setAttribute("directory", "");
@@ -57,11 +110,20 @@ export function WorkspacePage() {
   const createAndIndex = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setError(null);
-    if (files.length === 0) {
+    setSuccessMessage(null);
+    const hasRepositoryUrl = repositoryUrl.trim().length > 0;
+    if (hasRepositoryUrl && files.length > 0) {
+      setError("Choose a public GitHub URL or local files, not both.");
+      return;
+    }
+    if (!hasRepositoryUrl && files.length === 0) {
       setError("Choose source or documentation files to index.");
       return;
     }
-    if (files.length > 100 || files.reduce((total, file) => total + file.size, 0) > 4_000_000) {
+    if (!hasRepositoryUrl && (
+      files.length > 100 ||
+      files.reduce((total, file) => total + file.size, 0) > 4_000_000
+    )) {
       setError("Select up to 100 files with a combined size under 4 MB.");
       return;
     }
@@ -72,11 +134,16 @@ export function WorkspacePage() {
         ...(repositoryUrl ? { repositoryUrl } : {})
       });
       setProjects((current) => [project, ...current]);
-      const sourceFiles = await Promise.all(files.map(async (file) => ({
-        path: file.webkitRelativePath || file.name,
-        content: await file.text()
-      })));
-      await projectApi.index(project.id, sourceFiles);
+      if (hasRepositoryUrl) {
+        await projectApi.importRepository(project.id);
+        setSuccessMessage("Repository import started. It may take several minutes to finish indexing.");
+      } else {
+        const sourceFiles = await Promise.all(files.map(async (file) => ({
+          path: file.webkitRelativePath || file.name,
+          content: await file.text()
+        })));
+        await projectApi.index(project.id, sourceFiles);
+      }
       setProjectName("");
       setRepositoryUrl("");
       setFiles([]);
@@ -84,12 +151,32 @@ export function WorkspacePage() {
       if (directoryInput.current) directoryInput.current.value = "";
       await loadProjects();
     } catch (submitError) {
-      setError(submitError instanceof ApiError
+      const message = submitError instanceof ApiError
         ? submitError.message
-        : submitError instanceof Error ? submitError.message : "Project setup failed");
+        : submitError instanceof Error ? submitError.message : "Project setup failed";
       await loadProjects();
+      setError(message);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const retryRepositoryImport = async (projectId: string) => {
+    setRetryingProjectId(projectId);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      await projectApi.importRepository(projectId);
+      await loadProjects();
+      setSuccessMessage("Repository import restarted. This project will be available when indexing finishes.");
+    } catch (importError) {
+      const message = importError instanceof ApiError
+        ? importError.message
+        : importError instanceof Error ? importError.message : "Repository import failed";
+      await loadProjects();
+      setError(message);
+    } finally {
+      setRetryingProjectId(null);
     }
   };
 
@@ -127,22 +214,23 @@ export function WorkspacePage() {
               <input value={projectName} onChange={(event) => setProjectName(event.target.value)} minLength={1} maxLength={120} required placeholder="e.g. Payments service" />
             </label>
             <label className="field">
-              <span>Repository URL <em>optional · reference only</em></span>
+              <span>Public GitHub repository URL <em>imports recursively</em></span>
               <input type="url" value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="https://github.com/team/repository" />
             </label>
             <div className="field source-picker">
               <span>Source and documentation files</span>
               <label className="file-picker-face">
                 <input ref={fileInput} type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
-                <span className="upload-symbol">↑</span><span className="file-picker-copy"><strong>{files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : "Choose source files"}</strong><small>Up to 100 files · 4 MB total · secrets and generated files are excluded</small></span>
+                <span className="upload-symbol">↑</span><span className="file-picker-copy"><strong>{files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : "Choose source files"}</strong><small>Local uploads: up to 100 files · 4 MB total · secrets and generated files are excluded</small></span>
               </label>
               <input ref={directoryInput} className="directory-file-input" type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
               <button className="folder-picker-button" type="button" onClick={() => directoryInput.current?.click()}>Or choose a project folder</button>
             </div>
             {aiStatus !== "Local models ready" && <div className="ai-notice" role="status">{aiStatus}. Configure the chat and embedding models in the API environment before indexing or chatting.</div>}
             {error && <div className="form-alert" role="alert">{error}</div>}
+            {successMessage && <div className="form-success" role="status">{successMessage}</div>}
             <button className="primary-button" type="submit" disabled={submitting}>
-              {submitting ? <><span className="button-spinner" /> {files.length ? "Preparing project…" : "Working…"}</> : <>Create and index project <span aria-hidden="true">→</span></>}
+              {submitting ? <><span className="button-spinner" /> {repositoryUrl.trim() ? "Starting import…" : "Preparing project…"}</> : <>Create and index project <span aria-hidden="true">→</span></>}
             </button>
           </form>
         </section>
@@ -161,19 +249,28 @@ export function WorkspacePage() {
               {projects.map((project) => (
                 <article className="project-row" key={project.id}>
                   <div className="project-glyph" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</div>
-                  <div className="project-copy"><h3>{project.name}</h3><span>{project.repositoryUrl ?? "Local source files"}</span></div>
+                  <div className="project-copy"><h3>{project.name}</h3><span>{project.repositoryUrl ?? "Local source files"}</span>{project.indexingError && <small className="project-index-error">{project.indexingError}</small>}</div>
                   <span className={`project-status status-${project.indexingStatus}`}><i />{statusLabel[project.indexingStatus]}</span>
                   <div className="project-actions">
-                    {project.indexingStatus === "ready"
-                      ? <>
+                    {project.indexingStatus === "ready" && <>
                       <Link className="project-open" to={`/projects/${project.id}/chat`}>Ask this project <span>→</span></Link>
                       <Link className="project-open" to={`/projects/${project.id}/explorer`}>Code explorer <span>⌘</span></Link>
                       <Link className="project-open" to={`/projects/${project.id}/architecture`}>Architecture <span>◇</span></Link>
                       <Link className="project-open" to={`/projects/${project.id}/issues`}>AI analysis <span>↗</span></Link>
                       <Link className="project-open" to={`/projects/${project.id}/missions`}>Missions <span>↗</span></Link>
                       <Link className="project-open" to={`/projects/${project.id}/reports`}>Reports <span>▤</span></Link>
-                      </>
-                      : <span className="project-open-disabled">Chat unavailable</span>}
+                    </>}
+                    {project.repositoryUrl && project.indexingStatus !== "indexing" &&
+                      (project.indexingStatus !== "ready" || project.indexingError) && <button
+                        className="project-open project-import-retry"
+                        type="button"
+                        disabled={retryingProjectId === project.id}
+                        onClick={() => void retryRepositoryImport(project.id)}
+                      >
+                        {retryingProjectId === project.id ? "Importing…" : "Retry repository import"}
+                      </button>}
+                    {project.indexingStatus !== "ready" && (!project.repositoryUrl || project.indexingStatus === "indexing") &&
+                      <span className="project-open-disabled">Chat unavailable</span>}
                   </div>
                 </article>
               ))}

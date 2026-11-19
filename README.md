@@ -1,6 +1,6 @@
 # NEXUS
 
-NEXUS is an engineering intelligence platform with project-scoped code intelligence, local LLM/RAG, specialist analysis, missions, and evidence-backed engineering reports. Project setup uses safe source-file ingestion and does not clone repositories or access backend filesystem paths.
+NEXUS is an engineering intelligence platform with project-scoped code intelligence, local LLM/RAG, specialist analysis, missions, and evidence-backed engineering reports. Project setup supports safe source-file ingestion and importing public GitHub repository snapshots; it does not access arbitrary backend filesystem paths.
 
 ## Architecture
 
@@ -39,13 +39,14 @@ JWTs are held in an HTTP-only, same-site cookie; the frontend does not receive o
 - `POST /api/projects` creates a project owned by the authenticated user.
 - `GET /api/projects` lists only the authenticated user's projects.
 - `GET /api/projects/:projectId` returns a project only to its owner.
+- `POST /api/projects/:projectId/import` queues an import of the repository URL saved on the project and returns `202` immediately. It accepts public `github.com` repository or branch URLs, recursively indexes supported text files from the selected branch, and rejects private repositories, unsupported URL hosts, incomplete GitHub trees, or repositories exceeding 1,000 files / 20 MB (1 MB per file). Sensitive, generated, and unsupported files are excluded; binary files with a supported source extension fail the import rather than being silently ignored. Poll `GET /api/projects` or `GET /api/projects/:projectId` for indexing status and any import error.
 - `POST /api/projects/:projectId/index` accepts up to 100 relative-path source/documentation files, with a 4 MB combined content limit. It rejects traversal paths and excludes credential, generated, and unsupported files.
 - `POST /api/projects/:projectId/chat` streams `sources`, `token`, `done`, and `error` SSE events. Retrieval is filtered by owner, project, and active index generation.
 - `GET /api/ai/health` reports Ollama connectivity and configured model availability to authenticated users.
 
 Chunk records preserve file path, language, symbol context, line range, index generation, source hash, and vector embedding. Reindexing stages a new generation and activates it only after embedding and storage complete. AI telemetry records model names, duration, request status, token usage when provided, and retrieved source metadata; it does not persist prompts, model output, or credentials.
 
-The UI currently uploads selected files or a browser-selected project folder; it does not clone Git repositories or walk backend filesystem paths. Chat responses show retrieved source references and an explicit grounding limitation. This is retrieval-grounded assistance, not a verification claim.
+The UI imports public GitHub repositories recursively when a repository URL is provided, or uploads selected files / a browser-selected local folder. GitHub imports run asynchronously so embedding time does not cause the browser request to time out; the workspace refreshes project status and offers a retry if indexing fails. Local folder uploads remain bounded to 100 files and 4 MB. GitHub imports are read-only and use the repository's default branch unless a `/tree/<branch>` URL is provided; they do not clone repositories or access arbitrary backend filesystem paths. Chat responses show retrieved source references and an explicit grounding limitation. This is retrieval-grounded assistance, not a verification claim.
 
 ### Structural codebase map
 

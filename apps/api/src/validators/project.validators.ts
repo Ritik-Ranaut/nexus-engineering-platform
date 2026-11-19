@@ -1,9 +1,21 @@
 import { z } from "zod";
+import { parsePublicGitHubRepositoryUrl } from "../services/github-repository.service.js";
 
 export const createProjectSchema = z.object({
   name: z.string().trim().min(1).max(120),
   repositoryUrl: z.string().trim().url().max(2048).optional()
-}).strict();
+}).strict().superRefine(({ repositoryUrl }, context) => {
+  if (!repositoryUrl) return;
+  try {
+    parsePublicGitHubRepositoryUrl(repositoryUrl);
+  } catch (error) {
+    context.addIssue({
+      code: "custom",
+      path: ["repositoryUrl"],
+      message: error instanceof Error ? error.message : "Enter a valid public GitHub repository URL"
+    });
+  }
+});
 
 export const indexFilesSchema = z.object({
   files: z.array(z.object({

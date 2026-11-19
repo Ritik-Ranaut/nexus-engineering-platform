@@ -17,6 +17,7 @@ import { embedChunks } from "../src/services/embedding.service.js";
 import { streamProjectAnswer } from "../src/services/project-chat.service.js";
 import { aiProvider } from "../src/services/ai-provider.js";
 import { createEmbeddingModel } from "../src/services/ollama.service.js";
+import { fetchPublicGitHubRepositoryFiles } from "../src/services/github-repository.service.js";
 import { AppError } from "../src/utils/app-error.js";
 
 vi.mock("../src/services/embedding.service.js", () => ({
@@ -38,6 +39,18 @@ vi.mock("../src/services/ai-provider.js", () => ({
     createEmbeddingModel: vi.fn(),
     checkHealth: vi.fn()
   }
+}));
+vi.mock("../src/services/github-repository.service.js", () => ({
+  fetchPublicGitHubRepositoryFiles: vi.fn(),
+  parsePublicGitHubRepositoryUrl: vi.fn((repositoryUrl: string) => {
+    const url = new URL(repositoryUrl);
+    const segments = url.pathname.split("/").filter(Boolean);
+    return {
+      owner: segments[0],
+      repository: segments[1]?.replace(/\.git$/i, ""),
+      branch: segments.length >= 4 ? segments.slice(3).join("/") : undefined
+    };
+  })
 }));
 
 const app = createApp();
@@ -64,6 +77,7 @@ afterEach(async () => {
   vi.mocked(embedChunks).mockReset();
   vi.mocked(streamProjectAnswer).mockReset();
   vi.mocked(aiProvider.checkHealth).mockReset();
+  vi.mocked(fetchPublicGitHubRepositoryFiles).mockReset();
 });
 
 afterAll(async () => {
@@ -79,6 +93,103 @@ const register = async (agent: ReturnType<typeof request.agent>, email: string) 
   }).expect(201);
 
 describe("project context API", () => {
+  it("accepts a complete repository import without waiting for indexing", async () => {
+    vi.mocked(embedChunks).mockImplementation(async (chunks) =>
+      chunks.map(() => [0.1, 0.2, 0.3])
+    );
+    const repositoryUrl = "https://github.com/acme/service";
+    const files = Array.from({ length: 101 }, (_, index) => ({
+      path: `packages/service/src/file-${index}.ts`,
+      content: `export const value${index} = ${index};`
+    }));
+    vi.mocked(fetchPublicGitHubRepositoryFiles).mockResolvedValue(files);
+
+    const owner = request.agent(app);
+    await register(owner, `github-import-${crypto.randomUUID()}@example.com`);
+    const project = await owner.post("/api/projects")
+      .send({ name: "GitHub Import", repositoryUrl })
+      .expect(201);
+    const projectId = project.body.data.project.id as string;
+
+    const imported = await owner.post(`/api/projects/${projectId}/import`)
+      .expect(202);
+
+    expect(imported.body.data.status).toBe("indexing");
+    await vi.waitFor(async () => {
+      expect(await ProjectFile.countDocuments({ projectId, generation: 1 })).toBe(101);
+    });
+    expect(await ProjectFile.countDocuments({ projectId, generation: 1 })).toBe(101);
+    expect(fetchPublicGitHubRepositoryFiles).toHaveBeenCalledWith(
+      repositoryUrl,
+      expect.any(Function)
+    );
+  });
+
+  it("stores an asynchronous repository import failure for the project owner", async () => {
+    vi.mocked(fetchPublicGitHubRepositoryFiles).mockRejectedValue(
+      new AppError(502, "GitHub could not provide this repository", "GITHUB_IMPORT_FAILED")
+    );
+    const owner = request.agent(app);
+    await register(owner, `failed-github-import-${crypto.randomUUID()}@example.com`);
+    const project = await owner.post("/api/projects")
+      .send({ name: "Unavailable Repository", repositoryUrl: "https://github.com/acme/private" })
+      .expect(201);
+    const projectId = project.body.data.project.id as string;
+
+    await owner.post(`/api/projects/${projectId}/import`).expect(202);
+    await vi.waitFor(async () => {
+      const savedProject = await Project.findById(projectId);
+      expect(savedProject).toMatchObject({
+        indexingStatus: "failed",
+        indexingError: "GitHub could not provide this repository"
+      });
+    });
+
+    const listed = await owner.get("/api/projects").expect(200);
+    expect(listed.body.data.projects[0]).toMatchObject({
+      id: projectId,
+      indexingStatus: "failed",
+      indexingError: "GitHub could not provide this repository"
+    });
+  });
+
+  it("prevents duplicate imports while a repository is being fetched", async () => {
+    vi.mocked(embedChunks).mockImplementation(async (chunks) =>
+      chunks.map(() => [0.1, 0.2, 0.3])
+    );
+    let releaseFetch!: (files: { path: string; content: string }[]) => void;
+    vi.mocked(fetchPublicGitHubRepositoryFiles).mockReturnValue(
+      new Promise((resolve) => { releaseFetch = resolve; })
+    );
+    const owner = request.agent(app);
+    await register(owner, `duplicate-github-import-${crypto.randomUUID()}@example.com`);
+    const project = await owner.post("/api/projects")
+      .send({ name: "Duplicate Import", repositoryUrl: "https://github.com/acme/service" })
+      .expect(201);
+    const projectId = project.body.data.project.id as string;
+
+    await owner.post(`/api/projects/${projectId}/import`).expect(202);
+    const duplicate = await owner.post(`/api/projects/${projectId}/import`).expect(409);
+    expect(duplicate.body.error.code).toBe("INDEXING_IN_PROGRESS");
+
+    releaseFetch([{ path: "src/index.ts", content: "export const ready = true;" }]);
+    await vi.waitFor(async () => {
+      expect((await Project.findById(projectId))?.indexingStatus).toBe("ready");
+    });
+  });
+
+  it("requires a repository URL to import a GitHub project", async () => {
+    const owner = request.agent(app);
+    await register(owner, `missing-github-url-${crypto.randomUUID()}@example.com`);
+    const project = await owner.post("/api/projects").send({ name: "No URL" }).expect(201);
+
+    const result = await owner.post(`/api/projects/${project.body.data.project.id}/import`)
+      .expect(400);
+
+    expect(result.body.error.code).toBe("REPOSITORY_URL_REQUIRED");
+    expect(fetchPublicGitHubRepositoryFiles).not.toHaveBeenCalled();
+  });
+
   it("indexes source chunks and exposes project status to its owner", async () => {
     vi.mocked(embedChunks).mockImplementation(async (chunks) =>
       chunks.map(() => [0.1, 0.2, 0.3])

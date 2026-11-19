@@ -10,7 +10,8 @@ export interface Project {
   id: string;
   name: string;
   repositoryUrl?: string;
-  indexingStatus: "empty" | "indexing" | "ready" | "failed";
+  indexingStatus: "empty" | "pending" | "validating" | "discovering" | "cloning" | "indexing" | "analyzing" | "ready" | "failed" | "cancelled";
+  indexingError?: string;
   createdAt: string;
   updatedAt?: string;
 }
@@ -533,6 +534,12 @@ export const projectApi = {
     }>>(
       `/api/projects/${encodeURIComponent(projectId)}/index`,
       { method: "POST", body: JSON.stringify({ files }) }
+    );
+  },
+  async importRepository(projectId: string) {
+    return request<ApiResponse<{ status: "indexing" }>>(
+      `/api/projects/${encodeURIComponent(projectId)}/import`,
+      { method: "POST" }
     );
   },
   async structure(projectId: string): Promise<{

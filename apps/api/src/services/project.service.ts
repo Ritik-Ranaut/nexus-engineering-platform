@@ -36,15 +36,35 @@ export const createProject = (ownerId: string, input: { name: string; repository
 
 export const listProjects = (ownerId: string) =>
   Project.find({ ownerId })
-    .select("name repositoryUrl indexingStatus createdAt updatedAt")
+    .select("name repositoryUrl indexingStatus indexingError createdAt updatedAt")
     .sort({ updatedAt: -1 })
     .lean();
+
+export const recoverInterruptedProjectIndexing = async () => {
+  const interruptedMessage = "Indexing was interrupted by an API restart. Retry the import.";
+  const interruptedStatuses = ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"];
+  await Promise.all([
+    Project.updateMany(
+      { indexingStatus: { $in: interruptedStatuses }, activeGeneration: 0 },
+      { $set: { indexingStatus: "failed", indexingError: interruptedMessage } }
+    ),
+    Project.updateMany(
+      { indexingStatus: { $in: interruptedStatuses }, activeGeneration: { $gt: 0 } },
+      { $set: { indexingStatus: "ready", indexingError: interruptedMessage } }
+    )
+  ]);
+};
 
 export const indexProjectFiles = async (
   projectId: string,
   ownerId: string,
   inputFiles: RepositoryFileInput[],
-  options: { incremental?: boolean; deletedPaths?: string[] } = {}
+  options: {
+    incremental?: boolean;
+    deletedPaths?: string[];
+    alreadyClaimed?: boolean;
+    onStatus?: (stage: "indexing" | "analyzing") => void;
+  } = {}
 ) => {
   const safeFiles = inputFiles.length > 0
     ? prepareRepositoryFiles(inputFiles)
@@ -52,14 +72,30 @@ export const indexProjectFiles = async (
       ? []
       : prepareRepositoryFiles(inputFiles);
   const project = await Project.findOneAndUpdate(
-    { _id: projectId, ownerId },
-    { $inc: { generationCounter: 1 }, $set: { indexingStatus: "indexing" } },
+    {
+      _id: projectId,
+      ownerId,
+      indexingStatus: options.alreadyClaimed
+        ? { $in: ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"] }
+        : { $nin: ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"] }
+    },
+    {
+      $inc: { generationCounter: 1 },
+      $set: { indexingStatus: "indexing" },
+      $unset: { indexingError: 1 }
+    },
     { new: true }
   );
-  if (!project) throw new AppError(404, "Project not found", "PROJECT_NOT_FOUND");
+  if (!project) {
+    if (!await Project.exists({ _id: projectId, ownerId })) {
+      throw new AppError(404, "Project not found", "PROJECT_NOT_FOUND");
+    }
+    throw new AppError(409, "Project indexing is already in progress", "INDEXING_IN_PROGRESS");
+  }
 
   const generation = project.generationCounter;
   const previousGeneration = project.activeGeneration;
+  options.onStatus?.("indexing");
   try {
     const previousFiles = previousGeneration > 0
       ? await ProjectFile.find({ ownerId, projectId, generation: previousGeneration }).lean()
@@ -161,6 +197,7 @@ export const indexProjectFiles = async (
 
     const safeNextFiles = nextFiles.map(({ path, content }) => ({ path, content }));
     const architecture = analyzeProjectFiles(safeNextFiles);
+    options.onStatus?.("analyzing");
     await ProjectFile.insertMany(nextFiles.map((file, index) => ({
       ownerId,
       projectId,
@@ -180,7 +217,10 @@ export const indexProjectFiles = async (
 
     const activated = await Project.updateOne(
       { _id: projectId, ownerId, generationCounter: generation },
-      { $set: { activeGeneration: generation, indexingStatus: "ready" } }
+      {
+        $set: { activeGeneration: generation, indexingStatus: "ready" },
+        $unset: { indexingError: 1 }
+      }
     );
     if (activated.modifiedCount !== 1) {
       throw new AppError(409, "A newer indexing run superseded this one", "INDEXING_SUPERSEDED");
@@ -216,7 +256,14 @@ export const indexProjectFiles = async (
   } catch (error) {
     await Project.updateOne(
       { _id: projectId, ownerId, generationCounter: generation },
-      { $set: { indexingStatus: previousGeneration > 0 ? "ready" : "failed" } }
+      {
+        $set: {
+          indexingStatus: previousGeneration > 0 ? "ready" : "failed",
+          indexingError: error instanceof AppError
+            ? error.message
+            : "Indexing failed unexpectedly. Check the API logs and retry."
+        }
+      }
     );
     await CodeChunk.deleteMany({ ownerId, projectId, generation }).catch((cleanupError: unknown) => {
       console.error("Could not remove incomplete project code chunks", {
@@ -241,7 +288,11 @@ export const deleteProjectVectors = async (projectId: string, ownerId: string) =
   const project = await getOwnedProject(projectId, ownerId);
   await Project.updateOne(
     { _id: project._id, ownerId },
-    { $inc: { generationCounter: 1 }, $set: { activeGeneration: 0, indexingStatus: "empty" } }
+    {
+      $inc: { generationCounter: 1 },
+      $set: { activeGeneration: 0, indexingStatus: "empty" },
+      $unset: { indexingError: 1 }
+    }
   );
   const [chunksDeleted] = await Promise.all([
     CodeChunk.deleteMany({ ownerId, projectId }),

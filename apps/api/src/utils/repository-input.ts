@@ -49,6 +49,9 @@ const shouldIndex = (filePath: string): boolean => {
     ["dockerfile", "makefile", "cmakelists.txt"].includes(baseName);
 };
 
+export const isIndexableRepositoryPath = (filePath: string) =>
+  shouldIndex(normalizeRepositoryPath(filePath));
+
 const quotedCredentialPattern =
   /\b(api[_-]?key|access[_-]?token|client[_-]?secret|private[_-]?key|credential|authorization|token|password|passwd|secret)\b(\s*[:=]\s*)(["'`])([^"'`\r\n]{6,})\3/gi;
 const unquotedCredentialPattern =

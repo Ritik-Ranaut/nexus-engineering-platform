@@ -3,6 +3,7 @@ import { Server, type Socket } from "socket.io";
 import { env } from "../config/env.js";
 import { Mission } from "../models/mission.model.js";
 import { VerificationRun } from "../models/verification-run.model.js";
+import { Project } from "../models/project.model.js";
 import { User } from "../models/user.model.js";
 import { verifyToken } from "../services/auth.service.js";
 
@@ -26,6 +27,14 @@ export interface VerificationProgressEvent {
 }
 
 let missionIo: Server | undefined;
+
+export interface ProjectImportProgressEvent {
+  projectId: string;
+  status: "pending" | "validating" | "discovering" | "cloning" | "indexing" | "analyzing" | "ready" | "failed" | "cancelled";
+  message: string;
+  error?: string;
+  createdAt: string;
+}
 
 const authenticatedUser = async (socket: Socket) => {
   const tokenCookie = (socket.handshake.headers.cookie ?? "")
@@ -86,6 +95,25 @@ export const attachMissionSocket = (httpServer: HttpServer) => {
         void socket.leave(`mission:${missionId}`);
       }
     });
+    socket.on("project:subscribe", (projectId: unknown, acknowledge?: (result: { ok: boolean }) => void) => {
+      if (typeof projectId !== "string" || !/^[a-f\d]{24}$/i.test(projectId)) {
+        acknowledge?.({ ok: false });
+        return;
+      }
+      void Project.exists({ _id: projectId, ownerId: socket.data.userId }).then((exists) => {
+        if (!exists) {
+          acknowledge?.({ ok: false });
+          return;
+        }
+        void socket.join(`project:${projectId}`);
+        acknowledge?.({ ok: true });
+      }).catch(() => acknowledge?.({ ok: false }));
+    });
+    socket.on("project:unsubscribe", (projectId: unknown) => {
+      if (typeof projectId === "string" && /^[a-f\d]{24}$/i.test(projectId)) {
+        void socket.leave(`project:${projectId}`);
+      }
+    });
     socket.on("verification:subscribe", (verificationId: unknown, acknowledge?: (result: { ok: boolean }) => void) => {
       if (typeof verificationId !== "string" || !/^[\da-f-]{36}$/i.test(verificationId)) {
         acknowledge?.({ ok: false });
@@ -122,6 +150,10 @@ export const emitMissionProgress = (event: MissionProgressEvent) => {
 
 export const emitVerificationProgress = (event: VerificationProgressEvent) => {
   missionIo?.to(`verification:${event.verificationId}`).emit("verification:progress", event);
+};
+
+export const emitProjectImportProgress = (event: ProjectImportProgressEvent) => {
+  missionIo?.to(`project:${event.projectId}`).emit("project:import-progress", event);
 };
 
 export const closeMissionSocket = async () => {

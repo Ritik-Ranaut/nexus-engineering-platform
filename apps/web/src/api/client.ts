@@ -542,6 +542,12 @@ export const projectApi = {
       { method: "POST" }
     );
   },
+  async cancelImport(projectId: string) {
+    return request<ApiResponse<{ project: Pick<Project, "id" | "indexingStatus" | "indexingError"> }>>(
+      `/api/projects/${encodeURIComponent(projectId)}/import/cancel`,
+      { method: "POST" }
+    );
+  },
   async structure(projectId: string): Promise<{
     tree: ProjectTreeDirectory;
     fileCount: number;

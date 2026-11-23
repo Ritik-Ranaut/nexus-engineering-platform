@@ -3,6 +3,13 @@ import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
 import { aiApi, ApiError, projectApi, type Project } from "../api/client";
 import { useAuthStore } from "../state/auth.store";
+import {
+  githubRepositoryUrlError,
+  normalizeGitHubRepositoryUrlInput
+} from "../utils/github-url";
+
+const importInProgress = (status: Project["indexingStatus"]) =>
+  ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"].includes(status);
 
 const statusLabel: Record<Project["indexingStatus"], string> = {
   empty: "Awaiting source",
@@ -26,6 +33,7 @@ export function WorkspacePage() {
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [retryingProjectId, setRetryingProjectId] = useState<string | null>(null);
+  const [cancellingProjectId, setCancellingProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [aiStatus, setAiStatus] = useState("Checking local model…");
@@ -45,9 +53,11 @@ export function WorkspacePage() {
   }, []);
 
   useEffect(() => { void loadProjects(); }, [loadProjects]);
-  const hasIndexingProjects = projects.some((project) =>
-    ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"].includes(project.indexingStatus)
-  );
+  const hasIndexingProjects = projects.some((project) => importInProgress(project.indexingStatus));
+  const importingProjectIds = projects
+    .filter((project) => importInProgress(project.indexingStatus))
+    .map((project) => project.id)
+    .join(",");
   useEffect(() => {
     if (!hasIndexingProjects) return;
     const intervalId = window.setInterval(() => {
@@ -58,11 +68,9 @@ export function WorkspacePage() {
     return () => window.clearInterval(intervalId);
   }, [hasIndexingProjects]);
   useEffect(() => {
-    const importingProjects = projects.filter((project) =>
-      ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"].includes(project.indexingStatus)
-    );
+    const importingProjects = projects.filter((project) => importInProgress(project.indexingStatus));
     if (importingProjects.length === 0) return;
-    const socket = io({ withCredentials: true, reconnection: true });
+    const socket = io({ withCredentials: true, reconnection: true, path: "/socket.io" });
     const subscribe = () => {
       for (const project of importingProjects) {
         socket.emit("project:subscribe", project.id);
@@ -80,7 +88,7 @@ export function WorkspacePage() {
       ));
     });
     return () => { void socket.close(); };
-  }, [hasIndexingProjects]);
+  }, [importingProjectIds]);
   useEffect(() => {
     if (projectName.trim()) return;
     const repositoryName = repositoryUrl.trim()
@@ -111,10 +119,18 @@ export function WorkspacePage() {
     event.preventDefault();
     setError(null);
     setSuccessMessage(null);
-    const hasRepositoryUrl = repositoryUrl.trim().length > 0;
+    const normalizedRepositoryUrl = normalizeGitHubRepositoryUrlInput(repositoryUrl);
+    const hasRepositoryUrl = normalizedRepositoryUrl.length > 0;
     if (hasRepositoryUrl && files.length > 0) {
       setError("Choose a public GitHub URL or local files, not both.");
       return;
+    }
+    if (hasRepositoryUrl) {
+      const urlError = githubRepositoryUrlError(normalizedRepositoryUrl);
+      if (urlError) {
+        setError(urlError);
+        return;
+      }
     }
     if (!hasRepositoryUrl && files.length === 0) {
       setError("Choose source or documentation files to index.");
@@ -131,7 +147,7 @@ export function WorkspacePage() {
     try {
       const project = await projectApi.create({
         name: projectName,
-        ...(repositoryUrl ? { repositoryUrl } : {})
+        ...(hasRepositoryUrl ? { repositoryUrl: normalizedRepositoryUrl } : {})
       });
       setProjects((current) => [project, ...current]);
       if (hasRepositoryUrl) {
@@ -158,6 +174,25 @@ export function WorkspacePage() {
       setError(message);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const cancelRepositoryImport = async (projectId: string) => {
+    setCancellingProjectId(projectId);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      await projectApi.cancelImport(projectId);
+      await loadProjects();
+      setSuccessMessage("Repository import cancelled.");
+    } catch (importError) {
+      const message = importError instanceof ApiError
+        ? importError.message
+        : importError instanceof Error ? importError.message : "Could not cancel the import";
+      await loadProjects();
+      setError(message);
+    } finally {
+      setCancellingProjectId(null);
     }
   };
 
@@ -260,7 +295,7 @@ export function WorkspacePage() {
                       <Link className="project-open" to={`/projects/${project.id}/missions`}>Missions <span>↗</span></Link>
                       <Link className="project-open" to={`/projects/${project.id}/reports`}>Reports <span>▤</span></Link>
                     </>}
-                    {project.repositoryUrl && project.indexingStatus !== "indexing" &&
+                    {project.repositoryUrl && ["failed", "cancelled"].includes(project.indexingStatus) &&
                       (project.indexingStatus !== "ready" || project.indexingError) && <button
                         className="project-open project-import-retry"
                         type="button"
@@ -269,6 +304,14 @@ export function WorkspacePage() {
                       >
                         {retryingProjectId === project.id ? "Importing…" : "Retry repository import"}
                       </button>}
+                    {project.repositoryUrl && importInProgress(project.indexingStatus) && <button
+                      className="project-open project-import-retry"
+                      type="button"
+                      disabled={cancellingProjectId === project.id}
+                      onClick={() => void cancelRepositoryImport(project.id)}
+                    >
+                      {cancellingProjectId === project.id ? "Cancelling…" : "Cancel import"}
+                    </button>}
                     {project.indexingStatus !== "ready" && (!project.repositoryUrl || project.indexingStatus === "indexing") &&
                       <span className="project-open-disabled">Chat unavailable</span>}
                   </div>

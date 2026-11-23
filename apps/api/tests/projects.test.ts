@@ -40,18 +40,13 @@ vi.mock("../src/services/ai-provider.js", () => ({
     checkHealth: vi.fn()
   }
 }));
-vi.mock("../src/services/github-repository.service.js", () => ({
-  fetchPublicGitHubRepositoryFiles: vi.fn(),
-  parsePublicGitHubRepositoryUrl: vi.fn((repositoryUrl: string) => {
-    const url = new URL(repositoryUrl);
-    const segments = url.pathname.split("/").filter(Boolean);
-    return {
-      owner: segments[0],
-      repository: segments[1]?.replace(/\.git$/i, ""),
-      branch: segments.length >= 4 ? segments.slice(3).join("/") : undefined
-    };
-  })
-}));
+vi.mock("../src/services/github-repository.service.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../src/services/github-repository.service.js")>();
+  return {
+    ...actual,
+    fetchPublicGitHubRepositoryFiles: vi.fn()
+  };
+});
 
 const app = createApp();
 let database: MongoMemoryServer;
@@ -121,7 +116,8 @@ describe("project context API", () => {
     expect(await ProjectFile.countDocuments({ projectId, generation: 1 })).toBe(101);
     expect(fetchPublicGitHubRepositoryFiles).toHaveBeenCalledWith(
       repositoryUrl,
-      expect.any(Function)
+      expect.any(Function),
+      expect.any(AbortSignal)
     );
   });
 
@@ -188,6 +184,32 @@ describe("project context API", () => {
 
     expect(result.body.error.code).toBe("REPOSITORY_URL_REQUIRED");
     expect(fetchPublicGitHubRepositoryFiles).not.toHaveBeenCalled();
+  });
+
+  it("rejects unauthenticated GitHub imports", async () => {
+    await request(app).post("/api/projects/64b64b64b64b64b64b64b64b/import").expect(401);
+  });
+
+  it("cancels an in-progress GitHub import", async () => {
+    let releaseFetch!: (files: { path: string; content: string }[]) => void;
+    vi.mocked(fetchPublicGitHubRepositoryFiles).mockReturnValue(
+      new Promise((resolve) => { releaseFetch = resolve; })
+    );
+    const owner = request.agent(app);
+    await register(owner, `cancel-github-import-${crypto.randomUUID()}@example.com`);
+    const project = await owner.post("/api/projects")
+      .send({ name: "Cancellable Import", repositoryUrl: "https://github.com/acme/service" })
+      .expect(201);
+    const projectId = project.body.data.project.id as string;
+    expect(project.body.data.project.indexingStatus).toBe("pending");
+
+    await owner.post(`/api/projects/${projectId}/import`).expect(202);
+    const cancelled = await owner.post(`/api/projects/${projectId}/import/cancel`).expect(200);
+    expect(cancelled.body.data.project.indexingStatus).toBe("cancelled");
+    releaseFetch([{ path: "src/index.ts", content: "export const ready = true;" }]);
+    await vi.waitFor(async () => {
+      expect((await Project.findById(projectId))?.indexingStatus).toBe("cancelled");
+    });
   });
 
   it("indexes source chunks and exposes project status to its owner", async () => {

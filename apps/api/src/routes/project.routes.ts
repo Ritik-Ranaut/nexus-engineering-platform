@@ -8,6 +8,7 @@ import {
   sendMessage as sendConversationMessage
 } from "../controllers/project-conversation.controller.js";
 import {
+  cancelImport,
   create,
   deleteVectors,
   get,
@@ -121,6 +122,7 @@ router.post("/", create);
 router.get("/", list);
 router.get("/:projectId", get);
 router.post("/:projectId/import", indexingRateLimit, importRepository);
+router.post("/:projectId/import/cancel", indexingRateLimit, cancelImport);
 router.post("/:projectId/index", indexingRateLimit, index);
 router.patch("/:projectId/index", indexingRateLimit, updateIndex);
 router.delete("/:projectId/vectors", deleteVectors);

@@ -21,13 +21,16 @@ const envSchema = z.object({
   AI_VECTOR_DIMENSIONS: z.coerce.number().int().positive().default(768),
   AI_VECTOR_INDEX_NAME: z.string().min(1).default("nexus_code_chunks"),
   AI_RETRIEVAL_TOP_K: z.coerce.number().int().min(1).max(20).default(5),
-  AGENT_ANALYSIS_TIMEOUT_MS: z.coerce.number().int().positive().max(600_000).default(240_000)
+  AGENT_ANALYSIS_TIMEOUT_MS: z.coerce.number().int().positive().max(600_000).default(240_000),
+  GITHUB_TOKEN: z.string().trim().min(1).optional(),
+  GITHUB_IMPORT_STRATEGY: z.enum(["git", "api", "git_then_api"]).default("git_then_api")
 });
 
 export const parseEnvironment = (source: NodeJS.ProcessEnv) => envSchema.parse({
   ...source,
   OLLAMA_CHAT_MODEL: source.LLM_MODEL ?? source.OLLAMA_CHAT_MODEL,
-  OLLAMA_EMBEDDING_MODEL: source.EMBEDDING_MODEL ?? source.OLLAMA_EMBEDDING_MODEL
+  OLLAMA_EMBEDDING_MODEL: source.EMBEDDING_MODEL ?? source.OLLAMA_EMBEDDING_MODEL,
+  GITHUB_TOKEN: source.GITHUB_TOKEN?.trim() ? source.GITHUB_TOKEN.trim() : undefined
 });
 
 export const env = parseEnvironment(process.env);

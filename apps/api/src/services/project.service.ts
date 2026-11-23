@@ -12,6 +12,17 @@ import {
 import { chunkSourceFile } from "./code-chunker.service.js";
 import { embedChunks } from "./embedding.service.js";
 import { analyzeProjectFiles } from "./project-architecture.service.js";
+import { canonicalGitHubRepositoryUrl } from "./github-repository.service.js";
+
+export const activeImportStatuses = [
+  "validating",
+  "discovering",
+  "cloning",
+  "indexing",
+  "analyzing"
+] as const;
+
+export const recoverableImportStatuses = [...activeImportStatuses];
 
 export type ProjectDocument = Awaited<ReturnType<typeof getOwnedProject>>;
 export interface VectorSearchFilters {
@@ -32,7 +43,12 @@ export const getOwnedProject = async (projectId: string, ownerId: string) => {
 };
 
 export const createProject = (ownerId: string, input: { name: string; repositoryUrl?: string }) =>
-  Project.create({ ownerId, ...input });
+  Project.create({
+    ownerId,
+    name: input.name,
+    repositoryUrl: input.repositoryUrl ? canonicalGitHubRepositoryUrl(input.repositoryUrl) : undefined,
+    indexingStatus: input.repositoryUrl ? "pending" : "empty"
+  });
 
 export const listProjects = (ownerId: string) =>
   Project.find({ ownerId })
@@ -42,7 +58,7 @@ export const listProjects = (ownerId: string) =>
 
 export const recoverInterruptedProjectIndexing = async () => {
   const interruptedMessage = "Indexing was interrupted by an API restart. Retry the import.";
-  const interruptedStatuses = ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"];
+  const interruptedStatuses = [...recoverableImportStatuses];
   await Promise.all([
     Project.updateMany(
       { indexingStatus: { $in: interruptedStatuses }, activeGeneration: 0 },
@@ -64,8 +80,12 @@ export const indexProjectFiles = async (
     deletedPaths?: string[];
     alreadyClaimed?: boolean;
     onStatus?: (stage: "indexing" | "analyzing") => void;
+    signal?: AbortSignal;
   } = {}
 ) => {
+  if (options.signal?.aborted) {
+    throw new AppError(409, "Repository import was cancelled", "IMPORT_CANCELLED");
+  }
   const safeFiles = inputFiles.length > 0
     ? prepareRepositoryFiles(inputFiles)
     : options.incremental && (options.deletedPaths?.length ?? 0) > 0
@@ -76,8 +96,8 @@ export const indexProjectFiles = async (
       _id: projectId,
       ownerId,
       indexingStatus: options.alreadyClaimed
-        ? { $in: ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"] }
-        : { $nin: ["pending", "validating", "discovering", "cloning", "indexing", "analyzing"] }
+        ? { $in: ["pending", ...activeImportStatuses] }
+        : { $nin: activeImportStatuses }
     },
     {
       $inc: { generationCounter: 1 },
@@ -148,6 +168,9 @@ export const indexProjectFiles = async (
         fileId: { $in: [...unchangedFileIds] }
       }).select("+embedding").lean()
       : [];
+    if (options.signal?.aborted) {
+      throw new AppError(409, "Repository import was cancelled", "IMPORT_CANCELLED");
+    }
     const vectors = changedChunks.length > 0 ? await embedChunks(changedChunks) : [];
     if (vectors.length !== changedChunks.length) {
       throw new AppError(502, "Embedding model returned an invalid response", "INVALID_EMBEDDING_RESPONSE");
@@ -254,17 +277,20 @@ export const indexProjectFiles = async (
       architectureRelationships: architecture.relationships.length
     };
   } catch (error) {
-    await Project.updateOne(
-      { _id: projectId, ownerId, generationCounter: generation },
-      {
-        $set: {
-          indexingStatus: previousGeneration > 0 ? "ready" : "failed",
-          indexingError: error instanceof AppError
-            ? error.message
-            : "Indexing failed unexpectedly. Check the API logs and retry."
+    const cancelled = error instanceof AppError && error.code === "IMPORT_CANCELLED";
+    if (!cancelled) {
+      await Project.updateOne(
+        { _id: projectId, ownerId, generationCounter: generation },
+        {
+          $set: {
+            indexingStatus: previousGeneration > 0 ? "ready" : "failed",
+            indexingError: error instanceof AppError
+              ? error.message
+              : "Indexing failed unexpectedly. Check the API logs and retry."
+          }
         }
-      }
-    );
+      );
+    }
     await CodeChunk.deleteMany({ ownerId, projectId, generation }).catch((cleanupError: unknown) => {
       console.error("Could not remove incomplete project code chunks", {
         projectId,

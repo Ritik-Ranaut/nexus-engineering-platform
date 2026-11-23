@@ -2,6 +2,7 @@ import cors from "cors";
 import express from "express";
 import cookieParser from "cookie-parser";
 import helmet from "helmet";
+import mongoose from "mongoose";
 import { env } from "./config/env.js";
 import { errorHandler, notFoundHandler } from "./middleware/error.middleware.js";
 import authRoutes from "./routes/auth.routes.js";
@@ -17,7 +18,18 @@ export const createApp = () => {
   app.use(cors({ origin: env.WEB_ORIGIN, credentials: true }));
   app.use(express.json({ limit: "5mb" }));
   app.use(cookieParser());
-  app.get("/api/health", (_request, response) => response.status(200).json({ status: "ok" }));
+  app.get("/api/health", (_request, response) => {
+    const mongodb = mongoose.connection.readyState === 1;
+    response.status(mongodb ? 200 : 503).json({
+      status: mongodb ? "ok" : "degraded",
+      mongodb,
+      services: {
+        api: true,
+        mongodb,
+        ai: "ollama"
+      }
+    });
+  });
   app.use("/api/auth", authRoutes);
   app.use("/api/projects", projectRoutes);
   app.use("/api/missions", requireAuth);

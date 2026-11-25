@@ -161,9 +161,6 @@ export const chunkSourceFile = (filePath: string, source: string): CodeChunk[] =
     block.push(line);
     blockCharacters += line.length;
     if (block.length >= MAX_CHUNK_LINES || blockCharacters > MAX_CHUNK_CHARACTERS) flush();
-    block.push(line);
-    blockCharacters += line.length;
-    if (block.length >= 100 || blockCharacters > 8_000) flush();
 
     braceDepth += (line.match(/\{/g)?.length ?? 0) - (line.match(/\}/g)?.length ?? 0);
     if (declaration?.kind === "class" && braceDepth > 0) classBraceDepth = braceDepth;

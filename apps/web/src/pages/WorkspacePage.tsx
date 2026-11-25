@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
-import { aiApi, ApiError, engineeringApi, projectApi, type Project, type ProjectStructure } from "../api/client";
+import { aiApi, ApiError, engineeringApi, projectApi, type Project } from "../api/client";
 import { useAuthStore } from "../state/auth.store";
 import {
   githubRepositoryUrlError,
@@ -78,16 +78,16 @@ export function WorkspacePage() {
         projectApi.structure(p.id),
         engineeringApi.listRuns(p.id)
       ]).then(([structRes, runsRes]) => {
-        const structure: ProjectStructure | null = structRes.status === "fulfilled" ? structRes.value : null;
+        const structure = structRes.status === "fulfilled" ? structRes.value : null;
         const runs = runsRes.status === "fulfilled" ? runsRes.value : [];
         const latestRun = runs[0];
-        const criticalIssues = latestRun?.issues?.filter((i) => i.severity === "critical").length ?? 0;
-        const highIssues = latestRun?.issues?.filter((i) => i.severity === "high").length ?? 0;
+        const criticalIssues = latestRun?.report?.severityCounts?.critical ?? 0;
+        const highIssues = latestRun?.report?.severityCounts?.high ?? 0;
 
         setSummaries((prev) => ({
           ...prev,
           [p.id]: {
-            fileCount: structure?.files?.length ?? 0,
+            fileCount: structure?.fileCount ?? 0,
             languages: structure?.languages ?? [],
             runsCount: runs.length,
             criticalIssues,
@@ -106,9 +106,9 @@ export function WorkspacePage() {
       [projectId]: { ...(prev[projectId] ?? { fileCount: 0, languages: [], runsCount: 0, criticalIssues: 0, highIssues: 0, analyzed: false }), analyzing: true }
     }));
     try {
-      const run = await engineeringApi.run(projectId, "Comprehensive security and architecture analysis");
-      const criticalIssues = run.issues?.filter((i) => i.severity === "critical").length ?? 0;
-      const highIssues = run.issues?.filter((i) => i.severity === "high").length ?? 0;
+      const result = await engineeringApi.run(projectId, "Comprehensive security and architecture analysis");
+      const criticalIssues = result.issues.filter((i) => i.severity === "critical").length;
+      const highIssues = result.issues.filter((i) => i.severity === "high").length;
       setSummaries((prev) => ({
         ...prev,
         [projectId]: {

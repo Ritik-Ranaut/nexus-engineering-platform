@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
-import { aiApi, ApiError, projectApi, type Project } from "../api/client";
+import { aiApi, ApiError, engineeringApi, projectApi, type Project, type ProjectStructure } from "../api/client";
 import { useAuthStore } from "../state/auth.store";
 import {
   githubRepositoryUrlError,
@@ -19,10 +19,22 @@ const statusLabel: Record<Project["indexingStatus"], string> = {
   discovering: "Discovering project",
   indexing: "Indexing source",
   analyzing: "Analyzing architecture",
-  ready: "Ready to chat",
+  ready: "Ready for intelligence",
   failed: "Index failed",
   cancelled: "Import cancelled"
 };
+
+const STAGES: Project["indexingStatus"][] = ["validating", "cloning", "discovering", "indexing", "analyzing", "ready"];
+
+interface ProjectSummaryData {
+  fileCount: number;
+  languages: string[];
+  runsCount: number;
+  criticalIssues: number;
+  highIssues: number;
+  analyzing: boolean;
+  analyzed: boolean;
+}
 
 export function WorkspacePage() {
   const { user, logout, loading: authLoading } = useAuthStore();
@@ -37,6 +49,7 @@ export function WorkspacePage() {
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [aiStatus, setAiStatus] = useState("Checking local model…");
+  const [summaries, setSummaries] = useState<Record<string, ProjectSummaryData>>({});
   const fileInput = useRef<HTMLInputElement>(null);
   const directoryInput = useRef<HTMLInputElement>(null);
 
@@ -53,11 +66,76 @@ export function WorkspacePage() {
   }, []);
 
   useEffect(() => { void loadProjects(); }, [loadProjects]);
+
+  // Load project summaries (structure & engineering runs) for ready projects
+  useEffect(() => {
+    const readyProjects = projects.filter((p) => p.indexingStatus === "ready");
+    if (readyProjects.length === 0) return;
+
+    for (const p of readyProjects) {
+      if (summaries[p.id]) continue;
+      Promise.allSettled([
+        projectApi.structure(p.id),
+        engineeringApi.listRuns(p.id)
+      ]).then(([structRes, runsRes]) => {
+        const structure: ProjectStructure | null = structRes.status === "fulfilled" ? structRes.value : null;
+        const runs = runsRes.status === "fulfilled" ? runsRes.value : [];
+        const latestRun = runs[0];
+        const criticalIssues = latestRun?.issues?.filter((i) => i.severity === "critical").length ?? 0;
+        const highIssues = latestRun?.issues?.filter((i) => i.severity === "high").length ?? 0;
+
+        setSummaries((prev) => ({
+          ...prev,
+          [p.id]: {
+            fileCount: structure?.files?.length ?? 0,
+            languages: structure?.languages ?? [],
+            runsCount: runs.length,
+            criticalIssues,
+            highIssues,
+            analyzing: false,
+            analyzed: runs.length > 0
+          }
+        }));
+      });
+    }
+  }, [projects]);
+
+  const runProjectAudit = async (projectId: string) => {
+    setSummaries((prev) => ({
+      ...prev,
+      [projectId]: { ...(prev[projectId] ?? { fileCount: 0, languages: [], runsCount: 0, criticalIssues: 0, highIssues: 0, analyzed: false }), analyzing: true }
+    }));
+    try {
+      const run = await engineeringApi.run(projectId, "Comprehensive security and architecture analysis");
+      const criticalIssues = run.issues?.filter((i) => i.severity === "critical").length ?? 0;
+      const highIssues = run.issues?.filter((i) => i.severity === "high").length ?? 0;
+      setSummaries((prev) => ({
+        ...prev,
+        [projectId]: {
+          ...(prev[projectId] ?? { fileCount: 0, languages: [] }),
+          runsCount: (prev[projectId]?.runsCount ?? 0) + 1,
+          criticalIssues,
+          highIssues,
+          analyzing: false,
+          analyzed: true
+        }
+      }));
+      setSuccessMessage("AI Engineering Analysis completed successfully!");
+    } catch (auditErr) {
+      setSummaries((prev) => ({
+        ...prev,
+        [projectId]: { ...(prev[projectId] ?? { fileCount: 0, languages: [], runsCount: 0, criticalIssues: 0, highIssues: 0, analyzed: false }), analyzing: false }
+      }));
+      setError(auditErr instanceof Error ? auditErr.message : "AI analysis failed");
+    }
+  };
+
   const hasIndexingProjects = projects.some((project) => importInProgress(project.indexingStatus));
   const importingProjectIds = projects
     .filter((project) => importInProgress(project.indexingStatus))
     .map((project) => project.id)
     .join(",");
+
   useEffect(() => {
     if (!hasIndexingProjects) return;
     const intervalId = window.setInterval(() => {
@@ -67,6 +145,7 @@ export function WorkspacePage() {
     }, 3000);
     return () => window.clearInterval(intervalId);
   }, [hasIndexingProjects]);
+
   useEffect(() => {
     const importingProjects = projects.filter((project) => importInProgress(project.indexingStatus));
     if (importingProjects.length === 0) return;
@@ -89,6 +168,7 @@ export function WorkspacePage() {
     });
     return () => { void socket.close(); };
   }, [importingProjectIds]);
+
   useEffect(() => {
     if (projectName.trim()) return;
     const normalized = normalizeGitHubRepositoryUrlInput(repositoryUrl);
@@ -98,10 +178,12 @@ export function WorkspacePage() {
       .replace(/[-_]+/g, " ");
     if (repositoryName) setProjectName(repositoryName);
   }, [projectName, repositoryUrl]);
+
   useEffect(() => {
     directoryInput.current?.setAttribute("webkitdirectory", "");
     directoryInput.current?.setAttribute("directory", "");
   }, []);
+
   useEffect(() => {
     let active = true;
     aiApi.health().then((health) => {
@@ -231,6 +313,9 @@ export function WorkspacePage() {
     }
   };
 
+  const totalFiles = Object.values(summaries).reduce((acc, s) => acc + s.fileCount, 0);
+  const totalAudits = Object.values(summaries).reduce((acc, s) => acc + s.runsCount, 0);
+
   return (
     <main className="workspace">
       <header className="workspace-header">
@@ -242,13 +327,37 @@ export function WorkspacePage() {
         </div>
       </header>
       <section className="workspace-content project-dashboard">
-        <div className="workspace-eyebrow"><span className="status-dot" /> ENGINEERING WORKSPACE</div>
-        <h1>A searchable map<br /><span>of your codebase.</span></h1>
-        <p className="workspace-lede">Index source files to explore project structure and ask questions grounded in the code you provide.</p>
+        <div className="workspace-eyebrow"><span className="status-dot" /> ENGINEERING INTELLIGENCE PLATFORM</div>
+        <h1>Deep architectural analysis<br /><span>grounded in your code.</span></h1>
+        <p className="workspace-lede">Import any GitHub repository or local snapshot to inspect code structure, run multi-agent architectural audits, and generate grounded engineering solutions.</p>
+
+        {/* Global intelligence strip */}
+        <div className="engineering-stats-strip">
+          <div className="stat-card">
+            <span className="stat-label">Indexed Projects</span>
+            <span className="stat-value">{projects.length}</span>
+            <span className="stat-sub">{projects.filter((p) => p.indexingStatus === "ready").length} ready for intelligence</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">Source Files</span>
+            <span className="stat-value">{totalFiles > 0 ? totalFiles : "—"}</span>
+            <span className="stat-sub">Parsed & chunked vectors</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">AI Engineering Audits</span>
+            <span className="stat-value">{totalAudits}</span>
+            <span className="stat-sub">Multi-agent inspections</span>
+          </div>
+          <div className="stat-card">
+            <span className="stat-label">AI Engine</span>
+            <span className={`stat-value ${aiStatus === "Local models ready" ? "text-success" : "text-warn"}`}>{aiStatus === "Local models ready" ? "Online" : "Connecting"}</span>
+            <span className="stat-sub">{aiStatus}</span>
+          </div>
+        </div>
 
         <section className="project-create-card">
           <div className="section-heading">
-            <div><span className="card-overline">SOURCE SNAPSHOT</span><h2>Add a project</h2></div>
+            <div><span className="card-overline">REPOSITORY & SOURCE INGESTION</span><h2>Ingest a Project</h2></div>
             <span className={`local-badge${aiStatus === "Local models ready" ? " ai-ready" : " ai-unavailable"}`}><i className="status-dot" /> {aiStatus.toUpperCase()}</span>
           </div>
           <form className="project-form" onSubmit={(event) => void createAndIndex(event)}>
@@ -259,11 +368,11 @@ export function WorkspacePage() {
                 onChange={(event) => setProjectName(event.target.value)}
                 maxLength={120}
                 required={!repositoryUrl.trim()}
-                placeholder="e.g. Payments service"
+                placeholder="e.g. Payments Microservice"
               />
             </label>
             <label className="field">
-              <span>Public GitHub repository URL <em>imports recursively</em></span>
+              <span>Public GitHub repository URL <em>imports & indexes automatically</em></span>
               <input
                 type="text"
                 value={repositoryUrl}
@@ -271,80 +380,181 @@ export function WorkspacePage() {
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
-                placeholder="https://github.com/team/repository"
+                placeholder="https://github.com/octocat/Spoon-Knife"
               />
             </label>
             <div className="field source-picker">
-              <span>Source and documentation files</span>
+              <span>Or upload source and documentation files</span>
               <label className="file-picker-face">
                 <input ref={fileInput} type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
-                <span className="upload-symbol">↑</span><span className="file-picker-copy"><strong>{files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : "Choose source files"}</strong><small>Local uploads: up to 100 files · 4 MB total · secrets and generated files are excluded</small></span>
+                <span className="upload-symbol">↑</span><span className="file-picker-copy"><strong>{files.length ? `${files.length} file${files.length === 1 ? "" : "s"} selected` : "Choose source files"}</strong><small>Local uploads: up to 100 files · 4 MB total · secrets and binaries excluded automatically</small></span>
               </label>
               <input ref={directoryInput} className="directory-file-input" type="file" multiple onChange={(event) => setFiles(Array.from(event.target.files ?? []))} />
-              <button className="folder-picker-button" type="button" onClick={() => directoryInput.current?.click()}>Or choose a project folder</button>
+              <button className="folder-picker-button" type="button" onClick={() => directoryInput.current?.click()}>Or choose a local folder</button>
             </div>
-            {aiStatus !== "Local models ready" && <div className="ai-notice" role="status">{aiStatus}. Configure the chat and embedding models in the API environment before indexing or chatting.</div>}
+            {aiStatus !== "Local models ready" && <div className="ai-notice" role="status">{aiStatus}. Ensure Ollama chat & embedding models are active before indexing or chatting.</div>}
             {error && <div className="form-alert" role="alert">{error}</div>}
             {successMessage && <div className="form-success" role="status">{successMessage}</div>}
             <button className="primary-button" type="submit" disabled={submitting}>
-              {submitting ? <><span className="button-spinner" /> {repositoryUrl.trim() ? "Starting import…" : "Preparing project…"}</> : <>Create and index project <span aria-hidden="true">→</span></>}
+              {submitting ? <><span className="button-spinner" /> {repositoryUrl.trim() ? "Cloning & indexing repository…" : "Preparing project…"}</> : <>Import and Analyze Project <span aria-hidden="true">→</span></>}
             </button>
           </form>
         </section>
 
         <section className="projects-section">
           <div className="section-heading">
-            <div><span className="card-overline">YOUR WORKSPACE</span><h2>Projects <span className="count-pill">{projects.length}</span></h2></div>
-            <span className="project-caption">PRIVATE TO YOUR ACCOUNT</span>
+            <div><span className="card-overline">PROJECT PORTFOLIO</span><h2>Active Intelligence Cards <span className="count-pill">{projects.length}</span></h2></div>
+            <span className="project-caption">ISOLATED VECTOR EMBEDDINGS & MEMORY</span>
           </div>
           {projectsLoading ? (
-            <div className="project-empty"><span className="loading-orbit" /><span>Loading your projects…</span></div>
+            <div className="project-empty"><span className="loading-orbit" /><span>Loading engineering intelligence cards…</span></div>
           ) : projects.length === 0 ? (
-            <div className="project-empty"><span className="empty-mark">＋</span><strong>No projects yet</strong><span>Add a source snapshot above to explore its structure and indexed code.</span></div>
+            <div className="project-empty"><span className="empty-mark">＋</span><strong>No projects indexed</strong><span>Import a GitHub repository URL or upload source files above to begin.</span></div>
           ) : (
-            <div className="project-list">
-              {projects.map((project) => (
-                <article className="project-row" key={project.id}>
-                  <div className="project-glyph" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</div>
-                  <div className="project-copy"><h3>{project.name}</h3><span>{project.repositoryUrl ?? "Local source files"}</span>{project.indexingError && <small className="project-index-error">{project.indexingError}</small>}</div>
-                  <span className={`project-status status-${project.indexingStatus}`}><i />{statusLabel[project.indexingStatus]}</span>
-                  <div className="project-actions">
-                    {project.indexingStatus === "ready" && <>
-                      <Link className="project-open" to={`/projects/${project.id}/chat`}>Ask this project <span>→</span></Link>
-                      <Link className="project-open" to={`/projects/${project.id}/explorer`}>Code explorer <span>⌘</span></Link>
-                      <Link className="project-open" to={`/projects/${project.id}/architecture`}>Architecture <span>◇</span></Link>
-                      <Link className="project-open" to={`/projects/${project.id}/issues`}>AI analysis <span>↗</span></Link>
-                      <Link className="project-open" to={`/projects/${project.id}/missions`}>Missions <span>↗</span></Link>
-                      <Link className="project-open" to={`/projects/${project.id}/reports`}>Reports <span>▤</span></Link>
-                    </>}
-                    {project.repositoryUrl && ["failed", "cancelled"].includes(project.indexingStatus) &&
-                      (project.indexingStatus !== "ready" || project.indexingError) && <button
-                        className="project-open project-import-retry"
-                        type="button"
-                        disabled={retryingProjectId === project.id}
-                        onClick={() => void retryRepositoryImport(project.id)}
-                      >
-                        {retryingProjectId === project.id ? "Importing…" : "Retry repository import"}
-                      </button>}
-                    {project.repositoryUrl && importInProgress(project.indexingStatus) && <button
-                      className="project-open project-import-retry"
-                      type="button"
-                      disabled={cancellingProjectId === project.id}
-                      onClick={() => void cancelRepositoryImport(project.id)}
-                    >
-                      {cancellingProjectId === project.id ? "Cancelling…" : "Cancel import"}
-                    </button>}
-                    {project.indexingStatus !== "ready" && (!project.repositoryUrl || project.indexingStatus === "indexing") &&
-                      <span className="project-open-disabled">Chat unavailable</span>}
-                  </div>
-                </article>
-              ))}
+            <div className="project-cards-grid">
+              {projects.map((project) => {
+                const summary = summaries[project.id];
+                const isImporting = importInProgress(project.indexingStatus);
+                const currentStageIdx = STAGES.indexOf(project.indexingStatus);
+
+                return (
+                  <article className="project-intelligence-card" key={project.id}>
+                    <div className="card-header-row">
+                      <div className="project-avatar" aria-hidden="true">{project.name.slice(0, 1).toUpperCase()}</div>
+                      <div className="project-title-area">
+                        <h3>{project.name}</h3>
+                        <span className="project-repo-link" title={project.repositoryUrl ?? "Local files"}>
+                          {project.repositoryUrl ? (
+                            <>🔗 {project.repositoryUrl.replace(/^https:\/\/(?:www\.)?github\.com\//i, "")}</>
+                          ) : (
+                            <>📁 Local source files</>
+                          )}
+                        </span>
+                      </div>
+                      <span className={`project-status-pill status-${project.indexingStatus}`}>
+                        <i /> {statusLabel[project.indexingStatus]}
+                      </span>
+                    </div>
+
+                    {/* Live import stepper if import in progress */}
+                    {isImporting && (
+                      <div className="import-stepper">
+                        <div className="stepper-title">Ingestion Pipeline Progress</div>
+                        <div className="stepper-track">
+                          {["validating", "cloning", "discovering", "indexing", "analyzing"].map((step, idx) => {
+                            const isDone = currentStageIdx > idx;
+                            const isCurrent = project.indexingStatus === step;
+                            return (
+                              <div key={step} className={`step-node ${isDone ? "step-done" : isCurrent ? "step-active" : "step-pending"}`}>
+                                <div className="step-circle">{isDone ? "✓" : idx + 1}</div>
+                                <span className="step-name">{step}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {project.indexingError && (
+                      <div className="project-card-error">
+                        <strong>Pipeline Error:</strong> {project.indexingError}
+                      </div>
+                    )}
+
+                    {/* Metrics Matrix */}
+                    <div className="metrics-matrix">
+                      <div className="metric-box">
+                        <span className="metric-label">Files</span>
+                        <span className="metric-val">{summary ? summary.fileCount : "—"}</span>
+                      </div>
+                      <div className="metric-box">
+                        <span className="metric-label">Audits</span>
+                        <span className="metric-val">{summary ? summary.runsCount : 0}</span>
+                      </div>
+                      <div className="metric-box">
+                        <span className="metric-label">Critical</span>
+                        <span className={`metric-val ${summary && summary.criticalIssues > 0 ? "text-danger" : ""}`}>
+                          {summary ? summary.criticalIssues : 0}
+                        </span>
+                      </div>
+                      <div className="metric-box">
+                        <span className="metric-label">High</span>
+                        <span className={`metric-val ${summary && summary.highIssues > 0 ? "text-warn" : ""}`}>
+                          {summary ? summary.highIssues : 0}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Detected Languages */}
+                    {summary && summary.languages && summary.languages.length > 0 && (
+                      <div className="languages-strip">
+                        <span className="strip-title">Stack:</span>
+                        {summary.languages.map((lang) => (
+                          <span key={lang} className="lang-tag">{lang}</span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Card Actions */}
+                    <div className="project-card-footer">
+                      {project.indexingStatus === "ready" && (
+                        <>
+                          <div className="quick-audit-row">
+                            <button
+                              type="button"
+                              className="quick-audit-button"
+                              disabled={summary?.analyzing}
+                              onClick={() => void runProjectAudit(project.id)}
+                            >
+                              {summary?.analyzing ? "⚡ Running Multi-Agent Audit…" : summary?.analyzed ? "⚡ Re-run AI Analysis" : "⚡ Trigger AI Analysis"}
+                            </button>
+                          </div>
+                          <div className="project-action-commands">
+                            <Link className="action-pill primary" to={`/projects/${project.id}/chat`}>Ask AI <span>→</span></Link>
+                            <Link className="action-pill" to={`/projects/${project.id}/explorer`}>Code <span>⌘</span></Link>
+                            <Link className="action-pill" to={`/projects/${project.id}/architecture`}>Graph <span>◇</span></Link>
+                            <Link className="action-pill" to={`/projects/${project.id}/issues`}>Issues <span>↗</span></Link>
+                            <Link className="action-pill" to={`/projects/${project.id}/missions`}>Missions</Link>
+                            <Link className="action-pill" to={`/projects/${project.id}/reports`}>Reports <span>▤</span></Link>
+                          </div>
+                        </>
+                      )}
+
+                      {project.repositoryUrl && ["failed", "cancelled"].includes(project.indexingStatus) && (
+                        <div className="retry-row">
+                          <button
+                            className="retry-button"
+                            type="button"
+                            disabled={retryingProjectId === project.id}
+                            onClick={() => void retryRepositoryImport(project.id)}
+                          >
+                            {retryingProjectId === project.id ? "Retrying Ingestion…" : "↻ Retry Ingestion"}
+                          </button>
+                        </div>
+                      )}
+
+                      {project.repositoryUrl && isImporting && (
+                        <div className="cancel-row">
+                          <button
+                            className="cancel-button"
+                            type="button"
+                            disabled={cancellingProjectId === project.id}
+                            onClick={() => void cancelRepositoryImport(project.id)}
+                          >
+                            {cancellingProjectId === project.id ? "Cancelling…" : "✕ Cancel Pipeline"}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
         </section>
-        <div className="workspace-meta"><span>Signed in as <strong>{user?.email}</strong></span><span>Project context stays isolated <i className="status-dot" /></span></div>
+        <div className="workspace-meta"><span>Signed in as <strong>{user?.email}</strong></span><span>Local isolated vector search & memory <i className="status-dot" /></span></div>
       </section>
-      <footer className="workspace-footer"><span>NEXUS<span className="brand-period">.</span></span><span>Answers linked to your indexed source.</span></footer>
+      <footer className="workspace-footer"><span>NEXUS<span className="brand-period">.</span></span><span>Engineering Intelligence grounded in your code.</span></footer>
     </main>
   );
 }

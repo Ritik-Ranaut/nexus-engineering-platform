@@ -41,6 +41,10 @@ const findDeclaration = (line: string, insideClass: boolean): SymbolDeclaration 
   return null;
 };
 
+const MAX_CHUNK_CHARACTERS = 3_200;
+const MAX_CHUNK_LINES = 75;
+const MAX_LINE_CHARACTERS = 1_800;
+
 export const languageForPath = (filePath: string): string => {
   const extension = filePath.split(".").at(-1)?.toLowerCase() ?? "";
   return languageByExtension[extension] ?? "text";
@@ -79,21 +83,27 @@ const splitOversizedBlock = (
     characters = 0;
   };
   lines.forEach((line, offset) => {
-    if (pending.length >= 100 || characters + line.length > 8_000) {
-      const lastBlank = lastBlankLine();
-      if (lastBlank > 0 && lastBlank >= pending.length - 12) {
-        const carry = pending.splice(lastBlank + 1);
-        flush();
-        pending = carry;
-        startLine = firstLine + offset - carry.length;
-        characters = carry.reduce((sum, item) => sum + item.length, 0);
-      } else {
-        flush();
-        startLine = firstLine + offset;
+    const segments = line.length > MAX_LINE_CHARACTERS
+      ? line.match(new RegExp(`.{1,${MAX_LINE_CHARACTERS}}`, "g")) ?? [line]
+      : [line];
+
+    for (const segment of segments) {
+      if (pending.length >= MAX_CHUNK_LINES || characters + segment.length > MAX_CHUNK_CHARACTERS) {
+        const lastBlank = lastBlankLine();
+        if (lastBlank > 0 && lastBlank >= pending.length - 12) {
+          const carry = pending.splice(lastBlank + 1);
+          flush();
+          pending = carry;
+          startLine = firstLine + offset - carry.length;
+          characters = carry.reduce((sum, item) => sum + item.length, 0);
+        } else {
+          flush();
+          startLine = firstLine + offset;
+        }
       }
+      pending.push(segment);
+      characters += segment.length;
     }
-    pending.push(line);
-    characters += line.length;
   });
   flush();
   return result;
@@ -148,6 +158,9 @@ export const chunkSourceFile = (filePath: string, source: string): CodeChunk[] =
       blockStart = index + 1;
       blockContext = currentContext;
     }
+    block.push(line);
+    blockCharacters += line.length;
+    if (block.length >= MAX_CHUNK_LINES || blockCharacters > MAX_CHUNK_CHARACTERS) flush();
     block.push(line);
     blockCharacters += line.length;
     if (block.length >= 100 || blockCharacters > 8_000) flush();

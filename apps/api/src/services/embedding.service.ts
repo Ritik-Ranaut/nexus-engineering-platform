@@ -64,9 +64,31 @@ export const embedChunks = async (chunks: ChunkInput[]): Promise<number[][]> => 
   for (let offset = 0; offset < chunks.length; offset += 16) {
     const batch = chunks.slice(offset, offset + 16);
     const startedAt = Date.now();
-    const batchVectors = await retryEmbeddingOperation(() =>
-      embeddings.embedDocuments(batch.map((chunk) => chunk.content))
-    );
+    let batchVectors: number[][];
+    try {
+      batchVectors = await retryEmbeddingOperation(() =>
+        embeddings.embedDocuments(batch.map((chunk) => {
+          // Bound input text safely to max 3,000 characters to prevent context window overflow
+          return chunk.content.length > 3_000 ? chunk.content.slice(0, 3_000) : chunk.content;
+        }))
+      );
+    } catch (error) {
+      const isContextOverflow =
+        (error instanceof AppError && error.code === "EMBEDDING_CONTEXT_OVERFLOW") ||
+        (error instanceof Error && /context (?:length|window)|too many tokens|maximum context/i.test(error.message));
+      if (!isContextOverflow) throw error;
+
+      console.warn("Embedding batch exceeded context window; falling back to bounded chunk embedding", {
+        batchSize: batch.length,
+        model: env.OLLAMA_EMBEDDING_MODEL
+      });
+      batchVectors = [];
+      for (const chunk of batch) {
+        const boundedContent = chunk.content.length > 2_000 ? chunk.content.slice(0, 2_000) : chunk.content;
+        const single = await retryEmbeddingOperation(() => embeddings.embedDocuments([boundedContent]));
+        if (single[0]) batchVectors.push(single[0]);
+      }
+    }
     if (batchVectors.length !== batch.length) {
       throw new AppError(502, "Embedding model returned an invalid response", "INVALID_EMBEDDING_RESPONSE");
     }

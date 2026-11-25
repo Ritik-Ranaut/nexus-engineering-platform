@@ -2,18 +2,28 @@ import { z } from "zod";
 import { parsePublicGitHubRepositoryUrl } from "../services/github-repository.service.js";
 
 export const createProjectSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  repositoryUrl: z.string().trim().url().max(2048).optional()
-}).strict().superRefine(({ repositoryUrl }, context) => {
-  if (!repositoryUrl) return;
-  try {
-    parsePublicGitHubRepositoryUrl(repositoryUrl);
-  } catch (error) {
+  name: z.string().trim().max(120).optional(),
+  repositoryUrl: z.string().trim().max(2048).optional()
+}).strict().superRefine((data, context) => {
+  const hasName = Boolean(data.name && data.name.trim().length > 0);
+  const hasRepo = Boolean(data.repositoryUrl && data.repositoryUrl.trim().length > 0);
+  if (!hasName && !hasRepo) {
     context.addIssue({
       code: "custom",
-      path: ["repositoryUrl"],
-      message: error instanceof Error ? error.message : "Enter a valid public GitHub repository URL"
+      path: ["name"],
+      message: "Project name is required"
     });
+  }
+  if (data.repositoryUrl) {
+    try {
+      parsePublicGitHubRepositoryUrl(data.repositoryUrl);
+    } catch (error) {
+      context.addIssue({
+        code: "custom",
+        path: ["repositoryUrl"],
+        message: error instanceof Error ? error.message : "Enter a valid public GitHub repository URL"
+      });
+    }
   }
 });
 

@@ -17,7 +17,26 @@ const maximumFileBytes = 1_000_000;
 const maximumRepositoryBytes = 20_000_000;
 const gitProbeTimeoutMs = 8_000;
 const gitCloneTimeoutMs = 180_000;
-const skippedDirectoryNames = new Set(["node_modules", "vendor", ".git", "dist", "build", "coverage"]);
+const skippedDirectoryNames = new Set([
+  "node_modules",
+  "vendor",
+  ".git",
+  "dist",
+  "build",
+  "coverage",
+  ".next",
+  "__pycache__",
+  ".venv",
+  "venv",
+  "env",
+  ".turbo",
+  ".nuxt",
+  ".output",
+  "target",
+  ".cache",
+  ".pytest_cache",
+  ".serverless"
+]);
 
 export interface GitHubCloneRequest {
   owner: string;
@@ -136,19 +155,24 @@ export const listRemoteHeads = async (
   signal?: AbortSignal
 ): Promise<{ defaultBranch?: string; branches: string[] }> => {
   const { stdout } = await runGit(
-    [...gitSafetyPrefix, "ls-remote", "--heads", "--symref", "--", cloneUrl],
+    [...gitSafetyPrefix, "ls-remote", "--symref", "--", cloneUrl, "HEAD", "refs/heads/*"],
     { signal, timeout: 30_000 }
   );
   const branches: string[] = [];
   let defaultBranch: string | undefined;
   for (const line of stdout.split(/\r?\n/)) {
-    const symref = line.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD$/);
+    const symref = line.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD/);
     if (symref?.[1]) {
-      defaultBranch = symref[1];
+      defaultBranch = symref[1].trim();
       continue;
     }
     const head = line.match(/^[a-f0-9]+\s+refs\/heads\/(.+)$/i);
-    if (head?.[1]) branches.push(head[1]);
+    if (head?.[1]) {
+      const branchName = head[1].trim();
+      if (!branches.includes(branchName)) {
+        branches.push(branchName);
+      }
+    }
   }
   return { defaultBranch, branches };
 };
@@ -178,7 +202,9 @@ export const resolveBranchAndSubdirectory = (
 
 const assertInsideBase = async (baseDir: string, targetDir: string) => {
   const [base, target] = await Promise.all([realpath(baseDir), realpath(targetDir)]);
-  const relative = path.relative(base, target);
+  const normalizedBase = process.platform === "win32" ? path.resolve(base).toLowerCase() : path.resolve(base);
+  const normalizedTarget = process.platform === "win32" ? path.resolve(target).toLowerCase() : path.resolve(target);
+  const relative = path.relative(normalizedBase, normalizedTarget);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new AppError(500, "Repository checkout left the import sandbox", "GITHUB_CLONE_FAILED");
   }

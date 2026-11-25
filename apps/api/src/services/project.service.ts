@@ -12,7 +12,10 @@ import {
 import { chunkSourceFile } from "./code-chunker.service.js";
 import { embedChunks } from "./embedding.service.js";
 import { analyzeProjectFiles } from "./project-architecture.service.js";
-import { canonicalGitHubRepositoryUrl } from "./github-repository.service.js";
+import {
+  canonicalGitHubRepositoryUrl,
+  parsePublicGitHubRepositoryUrl
+} from "./github-repository.service.js";
 
 export const activeImportStatuses = [
   "validating",
@@ -42,13 +45,26 @@ export const getOwnedProject = async (projectId: string, ownerId: string) => {
   return project;
 };
 
-export const createProject = (ownerId: string, input: { name: string; repositoryUrl?: string }) =>
-  Project.create({
+export const createProject = (ownerId: string, input: { name?: string; repositoryUrl?: string }) => {
+  let name = input.name?.trim();
+  let repositoryUrl: string | undefined;
+  if (input.repositoryUrl) {
+    const parsed = parsePublicGitHubRepositoryUrl(input.repositoryUrl);
+    repositoryUrl = canonicalGitHubRepositoryUrl(input.repositoryUrl);
+    if (!name) {
+      name = parsed.repository.replace(/[-_]+/g, " ");
+    }
+  }
+  if (!name) {
+    throw new AppError(400, "Project name is required", "INVALID_PROJECT_NAME");
+  }
+  return Project.create({
     ownerId,
-    name: input.name,
-    repositoryUrl: input.repositoryUrl ? canonicalGitHubRepositoryUrl(input.repositoryUrl) : undefined,
-    indexingStatus: input.repositoryUrl ? "pending" : "empty"
+    name,
+    repositoryUrl,
+    indexingStatus: repositoryUrl ? "pending" : "empty"
   });
+};
 
 export const listProjects = (ownerId: string) =>
   Project.find({ ownerId })

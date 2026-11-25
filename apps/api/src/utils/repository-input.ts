@@ -12,6 +12,11 @@ const sensitiveFileNames = new Set([
   "credentials", "secrets.json"
 ]);
 
+const specialFileNames = new Set([
+  "dockerfile", "makefile", "cmakelists.txt", "readme", "license", "licence",
+  "contributing", "changelog", "gemfile", "procfile", "jenkinsfile", "vagrantfile", "brewfile"
+]);
+
 export interface RepositoryFileInput {
   path: string;
   content: string;
@@ -42,11 +47,11 @@ const shouldIndex = (filePath: string): boolean => {
     sensitiveFileNames.has(baseName) ||
     baseName.startsWith(".env.") ||
     /\.(pem|p12|pfx|key|crt|cer)$/i.test(baseName) ||
-    /(^|\/)(node_modules|vendor|\.git|dist|build|coverage)\//.test(lowerPath)
+    /(^|\/)(node_modules|vendor|\.git|dist|build|coverage|\.next|__pycache__|\.venv|venv|\.turbo|\.nuxt|\.output|target)\//.test(lowerPath)
   ) return false;
+  if (specialFileNames.has(baseName)) return true;
   const dot = baseName.lastIndexOf(".");
-  return supportedExtensions.has(baseName.slice(dot)) ||
-    ["dockerfile", "makefile", "cmakelists.txt"].includes(baseName);
+  return dot >= 0 && supportedExtensions.has(baseName.slice(dot));
 };
 
 export const isIndexableRepositoryPath = (filePath: string) =>

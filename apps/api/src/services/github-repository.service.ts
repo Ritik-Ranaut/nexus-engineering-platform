@@ -56,10 +56,23 @@ export interface ParsedGitHubRepository {
   branch?: string;
 }
 
+export const normalizeGitHubRepositoryUrl = (raw: string): string => {
+  let trimmed = raw.trim();
+  if (/^git@github\.com:/i.test(trimmed)) {
+    trimmed = `https://github.com/${trimmed.replace(/^git@github\.com:/i, "")}`;
+  } else if (/^(?:www\.)?github\.com\//i.test(trimmed)) {
+    trimmed = `https://${trimmed}`;
+  } else if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(trimmed)) {
+    trimmed = `https://github.com/${trimmed}`;
+  }
+  return trimmed;
+};
+
 export const parsePublicGitHubRepositoryUrl = (repositoryUrl: string): ParsedGitHubRepository => {
+  const normalizedInput = normalizeGitHubRepositoryUrl(repositoryUrl);
   let url: URL;
   try {
-    url = new URL(repositoryUrl.trim());
+    url = new URL(normalizedInput);
   } catch {
     throw new AppError(400, "Enter a valid public GitHub repository URL", "INVALID_GITHUB_URL");
   }

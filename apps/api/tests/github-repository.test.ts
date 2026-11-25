@@ -86,8 +86,26 @@ afterEach(() => {
 });
 
 describe("public GitHub repository import", () => {
-  it("normalizes .git URLs, www hosts, and preserves slash-containing branch names", () => {
+  it("normalizes .git URLs, www hosts, SSH URLs, bare domains, and preserves slash-containing branch names", () => {
     expect(parsePublicGitHubRepositoryUrl("https://github.com/acme/service.git")).toEqual({
+      owner: "acme",
+      repository: "service",
+      cloneUrl: "https://github.com/acme/service.git",
+      branch: undefined
+    });
+    expect(parsePublicGitHubRepositoryUrl("git@github.com:acme/service.git")).toEqual({
+      owner: "acme",
+      repository: "service",
+      cloneUrl: "https://github.com/acme/service.git",
+      branch: undefined
+    });
+    expect(parsePublicGitHubRepositoryUrl("github.com/acme/service")).toEqual({
+      owner: "acme",
+      repository: "service",
+      cloneUrl: "https://github.com/acme/service.git",
+      branch: undefined
+    });
+    expect(parsePublicGitHubRepositoryUrl("https://github.com/acme/service/")).toEqual({
       owner: "acme",
       repository: "service",
       cloneUrl: "https://github.com/acme/service.git",
@@ -199,11 +217,21 @@ describe("cloned repository file discovery", () => {
     try {
       await mkdir(path.join(root, "src"), { recursive: true });
       await mkdir(path.join(root, "node_modules", "pkg"), { recursive: true });
+      await mkdir(path.join(root, ".next", "cache"), { recursive: true });
+      await mkdir(path.join(root, "__pycache__"), { recursive: true });
       await writeFile(path.join(root, "src", "index.ts"), "export const ready = true;\n");
+      await writeFile(path.join(root, "README"), "# Title\nDocumentation\n");
+      await writeFile(path.join(root, "LICENSE"), "MIT License\n");
       await writeFile(path.join(root, ".env"), "SECRET=1\n");
       await writeFile(path.join(root, "node_modules", "pkg", "index.ts"), "export const ignored = true;\n");
+      await writeFile(path.join(root, ".next", "cache", "build.js"), "export const cached = true;\n");
+      await writeFile(path.join(root, "__pycache__", "module.pyc"), "ignored\n");
       const files = await readIndexableFilesFromDirectory(root);
-      expect(files).toEqual([{ path: "src/index.ts", content: "export const ready = true;\n" }]);
+      expect(files).toEqual([
+        { path: "LICENSE", content: "MIT License\n" },
+        { path: "README", content: "# Title\nDocumentation\n" },
+        { path: "src/index.ts", content: "export const ready = true;\n" }
+      ]);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

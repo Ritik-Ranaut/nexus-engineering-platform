@@ -9,3 +9,6 @@ process.env.LLM_MODEL = "test-chat-model";
 process.env.EMBEDDING_MODEL = "test-embedding-model";
 process.env.AI_VECTOR_DIMENSIONS = "3";
 process.env.GITHUB_IMPORT_STRATEGY = "api";
+if (process.platform === "win32" && !process.env.MONGOMS_SYSTEM_BINARY) {
+  process.env.MONGOMS_SYSTEM_BINARY = "C:\\Program Files\\MongoDB\\Server\\8.3\\bin\\mongod.exe";
+}

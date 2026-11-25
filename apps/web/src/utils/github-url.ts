@@ -3,11 +3,15 @@ const githubPathPattern = /^https:\/\/(?:www\.)?github\.com\/[^/]+\/[^/]+/i;
 export const normalizeGitHubRepositoryUrlInput = (value: string): string => {
   const trimmed = value.trim();
   if (!trimmed) return "";
+  if (/^git@github\.com:/i.test(trimmed)) {
+    return `https://github.com/${trimmed.replace(/^git@github\.com:/i, "").replace(/\.git$/i, "")}`;
+  }
   if (/^http:\/\/(?:www\.)?github\.com\//i.test(trimmed)) {
     return `https://${trimmed.replace(/^http:\/\/(?:www\.)?/i, "")}`;
   }
   if (/^https?:\/\//i.test(trimmed)) return trimmed;
   if (/^(www\.)?github\.com\//i.test(trimmed)) return `https://${trimmed}`;
+  if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(trimmed)) return `https://github.com/${trimmed}`;
   return trimmed;
 };
 

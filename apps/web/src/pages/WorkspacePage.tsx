@@ -91,8 +91,9 @@ export function WorkspacePage() {
   }, [importingProjectIds]);
   useEffect(() => {
     if (projectName.trim()) return;
-    const repositoryName = repositoryUrl.trim()
-      .match(/^https:\/\/github\.com\/[^/]+\/([^/?#]+)/i)?.[1]
+    const normalized = normalizeGitHubRepositoryUrlInput(repositoryUrl);
+    const repositoryName = normalized
+      .match(/^https:\/\/(?:www\.)?github\.com\/[^/]+\/([^/?#]+)/i)?.[1]
       ?.replace(/\.git$/i, "")
       .replace(/[-_]+/g, " ");
     if (repositoryName) setProjectName(repositoryName);
@@ -143,10 +144,17 @@ export function WorkspacePage() {
       setError("Select up to 100 files with a combined size under 4 MB.");
       return;
     }
+    const derivedName = normalizedRepositoryUrl
+      ? normalizedRepositoryUrl
+          .match(/^https:\/\/(?:www\.)?github\.com\/[^/]+\/([^/?#]+)/i)?.[1]
+          ?.replace(/\.git$/i, "")
+          ?.replace(/[-_]+/g, " ")
+      : "";
+    const finalProjectName = projectName.trim() || derivedName || "Imported Project";
     setSubmitting(true);
     try {
       const project = await projectApi.create({
-        name: projectName,
+        name: finalProjectName,
         ...(hasRepositoryUrl ? { repositoryUrl: normalizedRepositoryUrl } : {})
       });
       setProjects((current) => [project, ...current]);
@@ -245,12 +253,26 @@ export function WorkspacePage() {
           </div>
           <form className="project-form" onSubmit={(event) => void createAndIndex(event)}>
             <label className="field">
-              <span>Project name</span>
-              <input value={projectName} onChange={(event) => setProjectName(event.target.value)} minLength={1} maxLength={120} required placeholder="e.g. Payments service" />
+              <span>Project name {repositoryUrl.trim() && <small className="field-hint">(auto-derived if left blank)</small>}</span>
+              <input
+                value={projectName}
+                onChange={(event) => setProjectName(event.target.value)}
+                maxLength={120}
+                required={!repositoryUrl.trim()}
+                placeholder="e.g. Payments service"
+              />
             </label>
             <label className="field">
               <span>Public GitHub repository URL <em>imports recursively</em></span>
-              <input type="url" value={repositoryUrl} onChange={(event) => setRepositoryUrl(event.target.value)} placeholder="https://github.com/team/repository" />
+              <input
+                type="text"
+                value={repositoryUrl}
+                onChange={(event) => setRepositoryUrl(event.target.value)}
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                placeholder="https://github.com/team/repository"
+              />
             </label>
             <div className="field source-picker">
               <span>Source and documentation files</span>

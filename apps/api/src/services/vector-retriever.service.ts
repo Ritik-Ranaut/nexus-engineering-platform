@@ -21,6 +21,19 @@ export interface RetrievedSource {
   score: number;
 }
 
+const cosineSimilarity = (vecA: number[], vecB: number[]): number => {
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < vecA.length; i += 1) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+};
+
 export const buildVectorSearchPipeline = (
   queryVector: number[],
   projectId: string,
@@ -111,15 +124,63 @@ export const retrieveProjectContext = async (
       )
     ).exec();
   } catch (error) {
-    console.error("MongoDB vector search failed", {
-      projectId: String(project._id),
-      errorType: error instanceof Error ? error.name : "UnknownError"
-    });
-    throw new AppError(
-      503,
-      "Project retrieval is unavailable. Check the MongoDB Vector Search index configuration.",
-      "VECTOR_SEARCH_UNAVAILABLE"
-    );
+    // If $vectorSearch is not configured (e.g. standalone/local MongoDB without Atlas Search),
+    // gracefully fall back to in-memory cosine similarity retrieval so the app works seamlessly.
+    const isUnsupportedVectorSearch =
+      error instanceof Error &&
+      (/vectorSearch|AtlasCLI|\$search/i.test(error.message) ||
+        (error as unknown as Record<string, unknown>).code === 40324);
+
+    if (isUnsupportedVectorSearch) {
+      const matchFilter: Record<string, unknown> = {
+        ownerId,
+        projectId,
+        generation: project.activeGeneration
+      };
+      if (metadataFilters.fileId) matchFilter.fileId = metadataFilters.fileId;
+      if (metadataFilters.filePath) matchFilter.filePath = metadataFilters.filePath;
+      if (metadataFilters.language) matchFilter.language = metadataFilters.language;
+
+      const candidates = await CodeChunk.find(matchFilter)
+        .select("+embedding")
+        .lean()
+        .exec();
+
+      const scored = candidates
+        .map((chunk) => {
+          const score = chunk.embedding && Array.isArray(chunk.embedding)
+            ? cosineSimilarity(queryVector, chunk.embedding)
+            : 0;
+          return { chunk, score };
+        })
+        .sort((a, b) => b.score - a.score)
+        .slice(0, topK);
+
+      rows = scored.map(({ chunk, score }) => ({
+        _id: chunk._id,
+        fileId: chunk.fileId,
+        chunkId: chunk.chunkId,
+        filePath: chunk.filePath,
+        language: chunk.language,
+        symbolContext: chunk.symbolContext,
+        lineStart: chunk.lineStart,
+        lineEnd: chunk.lineEnd,
+        startLine: chunk.startLine,
+        endLine: chunk.endLine,
+        content: chunk.content,
+        score
+      }));
+    } else {
+      console.error("MongoDB vector search failed", {
+        projectId: String(project._id),
+        errorType: error instanceof Error ? error.name : "UnknownError"
+      });
+      throw new AppError(
+        503,
+        "Project retrieval is unavailable. Check the MongoDB Vector Search index configuration.",
+        "VECTOR_SEARCH_UNAVAILABLE"
+      );
+    }
   }
   return rows.map((row) => ({
     id: String(row._id),

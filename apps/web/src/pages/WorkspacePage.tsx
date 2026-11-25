@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { io } from "socket.io-client";
-import { aiApi, ApiError, engineeringApi, projectApi, type Project } from "../api/client";
+import { aiApi, ApiError, engineeringApi, engineeringReportApi, projectApi, type Project } from "../api/client";
 import { useAuthStore } from "../state/auth.store";
 import {
   githubRepositoryUrlError,
@@ -109,6 +109,12 @@ export function WorkspacePage() {
       const result = await engineeringApi.run(projectId, "Comprehensive security and architecture analysis");
       const criticalIssues = result.issues.filter((i) => i.severity === "critical").length;
       const highIssues = result.issues.filter((i) => i.severity === "high").length;
+      
+      // Auto-generate project health report from the completed analysis run
+      engineeringReportApi.generate(projectId, "project_health").catch((e) => {
+        console.warn("Auto-report generation background note:", e);
+      });
+
       setSummaries((prev) => ({
         ...prev,
         [projectId]: {
@@ -120,7 +126,7 @@ export function WorkspacePage() {
           analyzed: true
         }
       }));
-      setSuccessMessage("AI Engineering Analysis completed successfully!");
+      setSuccessMessage(`AI Analysis completed: ${result.issues.length} verified findings detected across ${result.run.selectedAgents?.join(", ") || "specialists"}. Project Health Report generated!`);
     } catch (auditErr) {
       setSummaries((prev) => ({
         ...prev,

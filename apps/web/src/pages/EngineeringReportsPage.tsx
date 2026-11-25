@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import {
   ApiError,
+  engineeringApi,
   engineeringReportApi,
   projectApi,
   type EngineeringReport,
@@ -129,6 +130,13 @@ export function EngineeringReportsPage() {
     setGenerating(true);
     setError(null);
     try {
+      if (!missionId) {
+        // Ensure at least one investigation run exists before building report
+        const runs = await engineeringApi.listRuns(projectId);
+        if (runs.length === 0) {
+          await engineeringApi.run(projectId, "Initial comprehensive engineering audit");
+        }
+      }
       const generated = missionId
         ? await engineeringReportApi.generateMission(projectId, missionId)
         : await engineeringReportApi.generate(projectId, reportType);
